@@ -35,7 +35,8 @@ class BluetoothLeService : Service() {
 
     companion object {
         const val ACTION_SEND_NAVIGATION = "com.pranava.tvsbridge.action.SEND_NAVIGATION"
-        const val EXTRA_PAYLOAD = "com.pranava.tvsbridge.extra.PAYLOAD"
+        const val EXTRA_PAYLOAD_1 = "com.pranava.tvsbridge.extra.PAYLOAD_1"
+        const val EXTRA_PAYLOAD_2 = "com.pranava.tvsbridge.extra.PAYLOAD_2"
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -48,9 +49,20 @@ class BluetoothLeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Auto-connect if associated
+        val prefs = getSharedPreferences("tvs_prefs", Context.MODE_PRIVATE)
+        val scooterMac = prefs.getString("scooter_mac", null)
+        
+        if (scooterMac != null && bluetoothGatt == null) {
+            connectToDevice(scooterMac)
+        }
+
         if (intent?.action == ACTION_SEND_NAVIGATION) {
-            val payload = intent.getByteArrayExtra(EXTRA_PAYLOAD)
-            payload?.let { sendNavigationData(it) }
+            val payload1 = intent.getByteArrayExtra(EXTRA_PAYLOAD_1)
+            val payload2 = intent.getByteArrayExtra(EXTRA_PAYLOAD_2)
+            if (payload1 != null && payload2 != null) {
+                sendNavigationData(payload1, payload2)
+            }
         }
         return START_STICKY
     }
@@ -67,14 +79,19 @@ class BluetoothLeService : Service() {
 
         @Suppress("DEPRECATION") // Assuming a simple notification
         val notification = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("TVS Bridge Active")
             .setContentText("Maintaining connection to dashboard...")
             .build()
             
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(1, notification)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            } else {
+                startForeground(1, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service: ${e.message}")
         }
     }
 
@@ -111,19 +128,29 @@ class BluetoothLeService : Service() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun sendNavigationData(payload: ByteArray) {
+    private fun sendNavigationData(payload1: ByteArray, payload2: ByteArray) {
         serviceScope.launch {
             bluetoothGatt?.let { gatt ->
                 val service = gatt.getService(TVS_SERVICE_UUID)
                 val characteristic = service?.getCharacteristic(TVS_CHAR_UUID)
                 
                 characteristic?.let {
-                    // Update value and write (legacy approach for API < 33 compatibility for now)
+                    // Write Packet 1 (ZP Control Payload)
                     @Suppress("DEPRECATION")
-                    it.value = payload
+                    it.value = payload1
                     @Suppress("DEPRECATION")
-                    val success = gatt.writeCharacteristic(it)
-                    Log.d(TAG, "Payload sent. Success: $success")
+                    var success = gatt.writeCharacteristic(it)
+                    Log.d(TAG, "Payload 1 (ZP/Control) sent. Success: $success")
+
+                    // Delay slightly to prevent dropping packets on BLE MTU queue
+                    kotlinx.coroutines.delay(400)
+
+                    // Write Packet 2 ([J String Payload)
+                    @Suppress("DEPRECATION")
+                    it.value = payload2
+                    @Suppress("DEPRECATION")
+                    success = gatt.writeCharacteristic(it)
+                    Log.d(TAG, "Payload 2 ([J/Text) sent. Success: $success")
                 } ?: run {
                     Log.e(TAG, "TVS Characteristic not found.")
                 }

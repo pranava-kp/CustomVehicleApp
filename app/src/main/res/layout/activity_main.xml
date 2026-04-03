@@ -15,11 +15,44 @@
         android:textStyle="bold"
         android:textAlignment="center" />
 
+    <TextView
+        android:id="@+id/tvBluetoothDevice"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Connected Device: None"
+        android:textSize="14sp"
+        android:textAlignment="center" />
+
     <Button
         android:id="@+id/btnEnableNotificationAccess"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="20dp"
         android:text="Enable Notification Access" />
+
+    <Button
+        android:id="@+id/btnAssociateScooter"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Associate TVS Scooter" />
+
+    <Button
+        android:id="@+id/btnTestDummyPayload"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Test Dummy Navigation" />
+
+    <TextView
+        android:id="@+id/tvPayloadResult"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:text="Payload Output..."
+        android:textAlignment="center"
+        android:textSize="14sp"
+        android:fontFamily="monospace" />
 
 </LinearLayout>
