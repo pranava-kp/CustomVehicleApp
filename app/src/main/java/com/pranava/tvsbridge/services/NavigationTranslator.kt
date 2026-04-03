@@ -119,4 +119,72 @@ object NavigationTranslator {
 
         return Pair(packet1, packet2)
     }
+
+    /**
+     * Create the [R Rider Name packet (91, 82)
+     */
+    fun createRiderNamePacket(name: String = "Rider"): ByteArray {
+        val packet = ByteArray(20)
+        packet[0] = 91 // '['
+        packet[1] = 82 // 'R'
+        val bytes = name.take(17).toByteArray(StandardCharsets.UTF_8)
+        System.arraycopy(bytes, 0, packet, 2, bytes.size)
+        // Pad the rest with 0 if necessary (already 0)
+        packet[19] = (-1).toByte() // 0xFF
+        return packet
+    }
+
+    /**
+     * Create the ZP Mobile Status packet (90, 80)
+     */
+    fun createMobileStatusPacket(
+        batteryLevel: Int = 100,
+        signalStrength: Int = 4,
+        is24Hour: Boolean = true
+    ): ByteArray {
+        val packet = ByteArray(20)
+        packet[0] = 90 // 'Z'
+        packet[1] = 80 // 'P'
+        
+        // TVS App logic: Battery 0-100 mapped to cluster level
+        packet[2] = (batteryLevel / 10).toByte() 
+        packet[3] = signalStrength.toByte() // 0-4 bars
+        packet[4] = 0 // Call status
+        packet[5] = 0 // SMS status
+        
+        val calendar = java.util.Calendar.getInstance()
+        packet[6] = calendar.get(java.util.Calendar.HOUR_OF_DAY).toByte()
+        packet[7] = calendar.get(java.util.Calendar.MINUTE).toByte()
+        packet[8] = calendar.get(java.util.Calendar.SECOND).toByte()
+        
+        packet[9] = if (is24Hour) 1.toByte() else (if (calendar.get(java.util.Calendar.AM_PM) == 0) 16.toByte() else 17.toByte())
+        packet[10] = 0 // Missed Call count
+        packet[11] = 0 // ?
+        
+        packet[12] = calendar.get(java.util.Calendar.DAY_OF_MONTH).toByte()
+        packet[13] = (calendar.get(java.util.Calendar.MONTH) + 1).toByte()
+        packet[14] = (calendar.get(java.util.Calendar.YEAR) % 100).toByte()
+        
+        packet[15] = 0 // Missed SMS count
+        packet[16] = 0 // Voice assist
+        packet[17] = 0 // Crash alert
+        packet[18] = 0 // Padding
+        packet[19] = (-1).toByte() // 0xFF
+        
+        return packet
+    }
+
+    /**
+     * Create the [L Location packet (91, 76)
+     */
+    fun createLocationPacket(locationName: String = "Navigating..."): ByteArray {
+        val packet = ByteArray(20)
+        packet[0] = 91 // '['
+        packet[1] = 76 // 'L'
+        val bytes = locationName.take(17).toByteArray(StandardCharsets.UTF_8)
+        System.arraycopy(bytes, 0, packet, 2, bytes.size)
+        // Pad the rest with 0 if necessary (already 0)
+        packet[19] = (-1).toByte() // 0xFF
+        return packet
+    }
 }

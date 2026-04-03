@@ -110,19 +110,60 @@ class BluetoothLeService : Service() {
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            Log.d(TAG, "onConnectionStateChange: status=$status, newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d(TAG, "Connected to GATT server. Discovering services...")
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.d(TAG, "Disconnected from GATT server.")
+                Log.d(TAG, "Disconnected from GATT server. Status code: $status")
+                bluetoothGatt = null
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.d(TAG, "Services discovered. Ready to send data.")
+                Log.d(TAG, "Services discovered successfully.")
+                sendInitialHandshake()
             } else {
-                Log.w(TAG, "onServicesDiscovered received: $status")
+                Log.w(TAG, "onServicesDiscovered failed with status: $status")
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendInitialHandshake() {
+        serviceScope.launch {
+            bluetoothGatt?.let { gatt ->
+                val service = gatt.getService(TVS_SERVICE_UUID)
+                val characteristic = service?.getCharacteristic(TVS_CHAR_UUID)
+
+                characteristic?.let {
+                    Log.i(TAG, "🚀 Initiating TVS Handshake sequence...")
+                    
+                    // 1. Rider Name ([R)
+                    val riderPacket = NavigationTranslator.createRiderNamePacket("Rider")
+                    @Suppress("DEPRECATION")
+                    it.value = riderPacket
+                    gatt.writeCharacteristic(it)
+                    kotlinx.coroutines.delay(400)
+                    
+                    // 2. Mobile Status (ZP)
+                    val statusPacket = NavigationTranslator.createMobileStatusPacket()
+                    @Suppress("DEPRECATION")
+                    it.value = statusPacket
+                    gatt.writeCharacteristic(it)
+                    kotlinx.coroutines.delay(400)
+                    
+                    // 3. Location Sync ([L)
+                    val locationPacket = NavigationTranslator.createLocationPacket("Ready")
+                    @Suppress("DEPRECATION")
+                    it.value = locationPacket
+                    gatt.writeCharacteristic(it)
+                    
+                    Log.i(TAG, "✅ Handshake sequence completed.")
+                } ?: run {
+                    Log.e(TAG, "Handshake failed: Characteristic not found.")
+                }
             }
         }
     }
