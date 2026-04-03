@@ -7,6 +7,8 @@ import android.app.Service
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
@@ -17,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -29,9 +32,13 @@ class BluetoothLeService : Service() {
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
-    // Placeholder TVS UUIDs (Replace with real ones from Wireshark Phase 2)
-    private val TVS_SERVICE_UUID = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb") 
-    private val TVS_CHAR_UUID = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb") 
+    // True TVS Jupiter 125 UUIDs
+    private val TVS_SERVICE_UUID = UUID.fromString("5456534d-5647-5341-5342-454e544f5251") 
+    private val TVS_WRITE_CHAR_UUID = UUID.fromString("00005352-0000-1000-8000-00805f9b34fb") 
+    private val TVS_READ_CHAR_UUID = UUID.fromString("00005354-0000-1000-8000-00805f9b34fb") 
+    private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+    private var keepAliveJob: kotlinx.coroutines.Job? = null
 
     companion object {
         const val ACTION_SEND_NAVIGATION = "com.pranava.tvsbridge.action.SEND_NAVIGATION"
@@ -51,7 +58,7 @@ class BluetoothLeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Auto-connect if associated
         val prefs = getSharedPreferences("tvs_prefs", Context.MODE_PRIVATE)
-        val scooterMac = prefs.getString("scooter_mac", null)
+        val scooterMac = prefs.getString("scooter_mac", null)?.uppercase()
         
         if (scooterMac != null && bluetoothGatt == null) {
             connectToDevice(scooterMac)
@@ -116,17 +123,35 @@ class BluetoothLeService : Service() {
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(TAG, "Disconnected from GATT server. Status code: $status")
+                stopKeepAlive()
                 bluetoothGatt = null
             }
         }
 
+        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "Services discovered successfully.")
-                sendInitialHandshake()
+                // To avoid sending packets larger than the default 20 bytes 
+                // we forcefully request the correct MTU size that TVS expects (141)
+                val mtuRequested = gatt.requestMtu(141)
+                if (!mtuRequested) {
+                    Log.w(TAG, "MTU request failed instantly. Falling back to default payload sequence.")
+                    sendInitialHandshake()
+                }
             } else {
                 Log.w(TAG, "onServicesDiscovered failed with status: $status")
             }
+        }
+        
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            super.onMtuChanged(gatt, mtu, status)
+            Log.d(TAG, "MTU changed to $mtu, Status: $status. Proceeding to Handshake.")
+            sendInitialHandshake()
+        }
+        
+        override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
+            Log.d(TAG, "onCharacteristicWrite status: $status")
         }
     }
 
@@ -135,47 +160,115 @@ class BluetoothLeService : Service() {
         serviceScope.launch {
             bluetoothGatt?.let { gatt ->
                 val service = gatt.getService(TVS_SERVICE_UUID)
-                val characteristic = service?.getCharacteristic(TVS_CHAR_UUID)
+                if (service == null) {
+                    Log.e(TAG, "TVS Service $TVS_SERVICE_UUID not found!")
+                    return@launch
+                }
 
-                characteristic?.let {
+                val readChar = service.getCharacteristic(TVS_READ_CHAR_UUID)
+                val writeChar = service.getCharacteristic(TVS_WRITE_CHAR_UUID)
+
+                if (readChar != null && writeChar != null) {
                     Log.i(TAG, "🚀 Initiating TVS Handshake sequence...")
                     
+                    // Enable Notifications on Read Characteristic first (Unlock)
+                    gatt.setCharacteristicNotification(readChar, true)
+                    val descriptor = readChar.getDescriptor(CCCD_UUID)
+                    if (descriptor != null) {
+                        @Suppress("DEPRECATION")
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
+                        gatt.writeDescriptor(descriptor)
+                        Log.i(TAG, "Enabled Notifications on read characteristic. Waiting 1s...")
+                        delay(1000)
+                    }
+
+                    // Ensure write type is set correctly
+                    writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+
                     // 1. Rider Name ([R)
-                    val riderPacket = NavigationTranslator.createRiderNamePacket("Rider")
+                    val riderPacket = NavigationTranslator.createRiderNamePacket("krid")
                     @Suppress("DEPRECATION")
-                    it.value = riderPacket
-                    gatt.writeCharacteristic(it)
-                    kotlinx.coroutines.delay(400)
+                    writeChar.value = riderPacket
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(writeChar)
+                    delay(400)
                     
                     // 2. Mobile Status (ZP)
                     val statusPacket = NavigationTranslator.createMobileStatusPacket()
                     @Suppress("DEPRECATION")
-                    it.value = statusPacket
-                    gatt.writeCharacteristic(it)
-                    kotlinx.coroutines.delay(400)
+                    writeChar.value = statusPacket
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(writeChar)
+                    delay(400)
                     
                     // 3. Location Sync ([L)
                     val locationPacket = NavigationTranslator.createLocationPacket("Ready")
                     @Suppress("DEPRECATION")
-                    it.value = locationPacket
-                    gatt.writeCharacteristic(it)
+                    writeChar.value = locationPacket
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(writeChar)
                     
                     Log.i(TAG, "✅ Handshake sequence completed.")
-                } ?: run {
-                    Log.e(TAG, "Handshake failed: Characteristic not found.")
+                    
+                    // Start sending periodic keep-alive pings to prevent the scooter from disconnecting
+                    startKeepAlive()
+
+                } else {
+                    Log.e(TAG, "Handshake failed: Characteristics not found.")
                 }
             }
         }
     }
+
+    private fun startKeepAlive() {
+        stopKeepAlive()
+        keepAliveJob = serviceScope.launch {
+            while (true) {
+                // Delay for 10 seconds between pings
+                delay(10000)
+                sendKeepAlivePing()
+            }
+        }
+        Log.d(TAG, "Started keep-alive ping loop.")
+    }
+
+    private fun stopKeepAlive() {
+        keepAliveJob?.cancel()
+        keepAliveJob = null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendKeepAlivePing() {
+        bluetoothGatt?.let { gatt ->
+            val service = gatt.getService(TVS_SERVICE_UUID)
+            val writeChar = service?.getCharacteristic(TVS_WRITE_CHAR_UUID)
+            
+            writeChar?.let {
+                // By sending the mobile status packet periodically, we keep the connection alive
+                // and keep the dashboard's clock/battery updated.
+                val pingPacket = NavigationTranslator.createMobileStatusPacket()
+                it.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                @Suppress("DEPRECATION")
+                it.value = pingPacket
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(it)
+                Log.d(TAG, "Keep-alive ping sent (ZP).")
+            }
+        }
+    }
+
 
     @SuppressLint("MissingPermission")
     private fun sendNavigationData(payload1: ByteArray, payload2: ByteArray) {
         serviceScope.launch {
             bluetoothGatt?.let { gatt ->
                 val service = gatt.getService(TVS_SERVICE_UUID)
-                val characteristic = service?.getCharacteristic(TVS_CHAR_UUID)
+                val writeChar = service?.getCharacteristic(TVS_WRITE_CHAR_UUID)
                 
-                characteristic?.let {
+                writeChar?.let {
+                    it.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                
                     // Write Packet 1 (ZP Control Payload)
                     @Suppress("DEPRECATION")
                     it.value = payload1
@@ -184,7 +277,7 @@ class BluetoothLeService : Service() {
                     Log.d(TAG, "Payload 1 (ZP/Control) sent. Success: $success")
 
                     // Delay slightly to prevent dropping packets on BLE MTU queue
-                    kotlinx.coroutines.delay(400)
+                    delay(400)
 
                     // Write Packet 2 ([J String Payload)
                     @Suppress("DEPRECATION")
@@ -193,7 +286,7 @@ class BluetoothLeService : Service() {
                     success = gatt.writeCharacteristic(it)
                     Log.d(TAG, "Payload 2 ([J/Text) sent. Success: $success")
                 } ?: run {
-                    Log.e(TAG, "TVS Characteristic not found.")
+                    Log.e(TAG, "TVS Write Characteristic not found.")
                 }
             } ?: run {
                 Log.e(TAG, "BluetoothGatt is null. Not connected to scooter.")
@@ -204,6 +297,7 @@ class BluetoothLeService : Service() {
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
         super.onDestroy()
+        stopKeepAlive()
         serviceJob.cancel()
         bluetoothGatt?.close()
         bluetoothGatt = null

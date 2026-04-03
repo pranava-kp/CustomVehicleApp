@@ -7,6 +7,7 @@ import android.provider.Settings
 import androidx.appcompat.app.AppCompatActivity
 import com.pranava.tvsbridge.databinding.ActivityMainBinding
 
+import android.annotation.SuppressLint
 import android.companion.CompanionDeviceManager
 import android.companion.AssociationRequest
 import android.companion.BluetoothLeDeviceFilter
@@ -23,17 +24,44 @@ class MainActivity : AppCompatActivity() {
 
     private val pairingLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
-            val device: android.bluetooth.BluetoothDevice? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, android.bluetooth.BluetoothDevice::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE)
+            val data = result.data
+            var macAddress: String? = null
+            var name: String? = null
+
+            if (data != null) {
+                // Attempt to retrieve AssociationInfo (Android 13+)
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    val association = data.getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION, android.companion.AssociationInfo::class.java)
+                    if (association != null) {
+                        macAddress = association.deviceMacAddress?.toString()?.uppercase()
+                        name = association.displayName?.toString() ?: "TVS Dashboard"
+                    }
+                }
+                
+                // Fallback for older devices or if AssociationInfo is null
+                if (macAddress == null) {
+                    @Suppress("DEPRECATION")
+                    val deviceExtra = data.getParcelableExtra<android.os.Parcelable>(CompanionDeviceManager.EXTRA_DEVICE)
+                    
+                    if (deviceExtra is android.bluetooth.le.ScanResult) {
+                        macAddress = deviceExtra.device.address?.uppercase()
+                        @SuppressLint("MissingPermission")
+                        name = deviceExtra.device.name ?: "TVS Dashboard"
+                    } else if (deviceExtra is android.bluetooth.BluetoothDevice) {
+                        macAddress = deviceExtra.address?.uppercase()
+                        @SuppressLint("MissingPermission")
+                        name = deviceExtra.name ?: "TVS Dashboard"
+                    }
+                }
             }
-            device?.let {
-                saveAssociatedDevice(it.address, it.name ?: "Unknown TVS")
+
+            if (macAddress != null) {
+                saveAssociatedDevice(macAddress, name ?: "TVS Dashboard")
                 updateStatus()
                 // Auto-start service to initiate GATT connection
                 startBleService()
+            } else {
+                binding.tvPayloadResult.text = "CDM Error: Could not extract device data."
             }
         }
     }
