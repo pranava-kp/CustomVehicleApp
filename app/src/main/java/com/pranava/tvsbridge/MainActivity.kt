@@ -17,6 +17,7 @@ import java.util.regex.Pattern
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import android.os.Build
+import android.widget.Toast
 
 class MainActivity : AppCompatActivity() {
 
@@ -63,6 +64,16 @@ class MainActivity : AppCompatActivity() {
                 updateStatus()
                 // Auto-start service to initiate GATT connection
                 startBleService()
+                
+                // Start observing device presence
+                try {
+                    deviceManager.startObservingDevicePresence(macAddress)
+                    android.util.Log.d("MainActivity", "Started observing device presence for $macAddress")
+                    Toast.makeText(this, "Started observing device presence!", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Failed to start observing device presence: ${e.message}")
+                    Toast.makeText(this, "Failed to start observing presence", Toast.LENGTH_SHORT).show()
+                }
             } else {
                 binding.tvPayloadResult.text = "CDM Error: Could not extract device data."
             }
@@ -132,7 +143,26 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Request Notification permission for Android 13+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 102)
+            }
+        }
+
         updateStatus()
+
+        // ALWAYS MAKE SURE WE ARE OBSERVING THE PRESENCE IF WE HAVE A DEVICE
+        val prefs = getSharedPreferences("tvs_prefs", Context.MODE_PRIVATE)
+        val macAddress = prefs.getString("scooter_mac", null)
+        if (macAddress != null) {
+             try {
+                 deviceManager.startObservingDevicePresence(macAddress)
+                 android.util.Log.d("MainActivity", "Ensuring observation for $macAddress on boot/open")
+             } catch (e: Exception) {
+                 android.util.Log.e("MainActivity", "Failed to start observing device presence: ${e.message}")
+             }
+        }
 
         binding.btnEnableNotificationAccess.setOnClickListener {
             val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
