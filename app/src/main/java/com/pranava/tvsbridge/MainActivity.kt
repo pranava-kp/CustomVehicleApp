@@ -14,6 +14,9 @@ import android.companion.BluetoothLeDeviceFilter
 import android.content.Context
 import androidx.activity.result.contract.ActivityResultContracts
 import java.util.regex.Pattern
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import android.os.Build
 
 class MainActivity : AppCompatActivity() {
 
@@ -62,6 +65,15 @@ class MainActivity : AppCompatActivity() {
                 startBleService()
             } else {
                 binding.tvPayloadResult.text = "CDM Error: Could not extract device data."
+            }
+        }
+    }
+    private val navSuccessReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == com.pranava.tvsbridge.services.BluetoothLeService.ACTION_NAVIGATION_SENT) {
+                // Update the UI to show it is safe!
+                binding.tvStatus.text = "✅ SUCCESS: Data Transmitted!"
+                binding.tvPayloadResult.append("\n\n✅ [TRANSMISSION COMPLETE]\nThe scooter has received the data. It is now safe to disconnect or send a new instruction.")
             }
         }
     }
@@ -190,13 +202,27 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateStatus()
-        
+
         val prefs = getSharedPreferences("crash_logs", android.content.Context.MODE_PRIVATE)
         val lastCrash = prefs.getString("last_crash", null)
         if (lastCrash != null) {
             binding.tvPayloadResult.text = "LAST CRASH LOG:\n$lastCrash"
             prefs.edit().remove("last_crash").apply()
         }
+
+        // NEW: Start listening for the Success Broadcast
+        val filter = IntentFilter(com.pranava.tvsbridge.services.BluetoothLeService.ACTION_NAVIGATION_SENT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(navSuccessReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(navSuccessReceiver, filter)
+        }
+    }
+
+    // NEW: Stop listening when the app is in the background
+    override fun onPause() {
+        super.onPause()
+        unregisterReceiver(navSuccessReceiver)
     }
 
     private fun updateStatus() {

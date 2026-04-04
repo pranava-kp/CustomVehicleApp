@@ -31,14 +31,21 @@ This project is structured around five core development phases:
 
 ## Current State
 
-## Current State
-
-Phase 1 (Data Interception), Phase 2 (Reverse Engineering), and **Phase 3 (Connectivity & Handshake)** are now **COMPLETED**.
+Phase 1 (Data Interception), Phase 2 (Reverse Engineering), and **Phase 3 (Connectivity & Handshake)** are now **100% COMPLETED**.
 
 **Progress Logs:**
 - ✅ **Data Interception:** Successfully parsing Google Maps notifications into dual-packet hex strings.
 - ✅ **Companion Device Manager:** Integrated native Android IoT discovery for persistent scooter association.
-- ✅ **Handshake Protocol:** Implemented the mandatory `[R`, `ZP`, and `[L` greeting sequence.
-- ✅ **BLE Watchdog Bypassed:** Successfully negotiated hardware MTU expansion (256 -> 65), unlocked the hidden CCCD notification descriptor, and implemented the infinite 2-second `[J` packet heartbeat to keep the dashboard permanently awake.
-- 🟡 **Status:** The phone and dashboard are maintaining a stable, infinite connection ("Connection Successful"). We are currently debugging the payload transmission queue to successfully render the first dummy navigation graphics on the LCD.
+- ✅ **Handshake Protocol:** Implemented the mandatory `[R` (Identity), `ZP` (Status), and `[J` (Heartbeat) sequence.
+- ✅ **Hardware Stability:** Negotiated BLE MTU expansion to 65 bytes and implemented a unified "Trojan Horse" heartbeat loop. The dashboard now maintains an infinite, stable connection without triggering the 15-second watchdog timer.
+- ✅ **Dashboard Navigation Unlock:** Successfully reverse-engineered the undocumented Navigation headers (`ZO` for Control, `[O` for Text).
+- ✅ **Buffer Overflow Patch:** Implemented real-time byte manipulation to inject a `0x00` Null Terminator before the checksum, preventing the dashboard's C-based firmware from crashing when reading custom strings.
+- 🟡 **Status (Next Step):** The Bluetooth pipeline is fully stable and rendering dummy graphics. Transitioning to Phase 4: wiring the `NotificationListenerService` GPS data stream directly into the unified BLE transmission queue.
 
+---
+
+### 🔬 Technical Documentation: TVS BLE Architecture Notes
+* **Heartbeat (`[J`):** Must be fired every 2 seconds or the dashboard watchdog triggers a disconnect.
+* **Status Update (`ZP`):** Used for background phone status (battery, network). Text payloads following this are hidden from the UI.
+* **Navigation Header (`ZO` / `[O`):** The exact header pair required to force the LCD into Navigation Mode and render turn arrows.
+* **String Formatting:** The dashboard uses C-style strings. ALL custom text payloads *must* end with a `0x00` byte immediately preceding the `0xFF` checksum, or the dashboard will experience a fatal buffer overflow and crash the connection.

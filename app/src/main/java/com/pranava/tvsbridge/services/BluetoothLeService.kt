@@ -17,14 +17,18 @@ class BluetoothLeService : Service() {
 
     private val TAG = "BluetoothLeService"
     private var bluetoothGatt: BluetoothGatt? = null
-    
+
     // Coroutine Scope for BLE operations
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var heartbeatJob: Job? = null
 
+    // Unified Queue State Variables (The Fix!)
+    private var currentPayload1: ByteArray? = null
+    private var currentPayload2: ByteArray? = null
+
     // TVS Jupiter 125 UUIDs
-    private val TVS_SERVICE_UUID = UUID.fromString("5456534d-5647-5341-5342-454e544f5251") 
+    private val TVS_SERVICE_UUID = UUID.fromString("5456534d-5647-5341-5342-454e544f5251")
     private val TVS_WRITE_CHAR_UUID = UUID.fromString("00005352-0000-1000-8000-00805f9b34fb")
     private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -33,13 +37,9 @@ class BluetoothLeService : Service() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d(TAG, "Connected to GATT! Shifting to High Priority...")
-
-                // 1. Force High Priority (Prevents dashboard timeout)
                 gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-
-                // 2. Request MTU Size Expansion (Crucial TVS Requirement)
                 serviceScope.launch {
-                    delay(100) // Brief pause to let priority shift settle
+                    delay(100)
                     Log.d(TAG, "Requesting MTU Expansion...")
                     gatt.requestMtu(256)
                 }
@@ -55,7 +55,6 @@ class BluetoothLeService : Service() {
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "MTU successfully negotiated to: $mtu. Discovering services...")
-                // 3. ONLY discover services AFTER MTU is agreed upon
                 gatt.discoverServices()
             } else {
                 Log.e(TAG, "MTU negotiation failed. Attempting to proceed anyway...")
@@ -66,35 +65,25 @@ class BluetoothLeService : Service() {
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.d(TAG, "Services discovered. Hunting for CCCD Notification Descriptor...")
+                Log.d(TAG, "Services discovered. Hunting for CCCD...")
                 val service = gatt.getService(TVS_SERVICE_UUID)
-
                 if (service != null) {
                     var descriptorFound = false
-
-                    // Loop through ALL characteristics to find the one with the CCCD
                     for (characteristic in service.characteristics) {
                         val descriptor = characteristic.getDescriptor(CCCD_UUID)
                         if (descriptor != null) {
                             Log.d(TAG, "Found CCCD on characteristic: ${characteristic.uuid}")
-
-                            // 4. Subscribe to notifications
                             gatt.setCharacteristicNotification(characteristic, true)
-
-                            // 5. Write 0x01 0x00 to CCCD
                             descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                             gatt.writeDescriptor(descriptor)
                             Log.d(TAG, "Wrote CCCD descriptor. Waiting for callback...")
                             descriptorFound = true
-                            break // Stop looping once we unlock it
+                            break
                         }
                     }
-
-                    if (!descriptorFound) {
-                        Log.e(TAG, "FATAL: Could not find any characteristic with a CCCD descriptor!")
-                    }
+                    if (!descriptorFound) Log.e(TAG, "FATAL: No CCCD found!")
                 } else {
-                    Log.e(TAG, "TVS Service UUID not found on device.")
+                    Log.e(TAG, "TVS Service UUID not found.")
                 }
             }
         }
@@ -103,8 +92,6 @@ class BluetoothLeService : Service() {
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS && descriptor.uuid == CCCD_UUID) {
                 Log.d(TAG, "Dashboard unlocked successfully! Initiating Handshake...")
-
-                // 6. Fire the 10ms Handshake via Coroutines
                 serviceScope.launch {
                     sendHandshakeSequence(gatt)
                 }
@@ -123,6 +110,7 @@ class BluetoothLeService : Service() {
         val payload1 = intent?.getByteArrayExtra("payload1")
         val payload2 = intent?.getByteArrayExtra("payload2")
 
+        // 1. Initial Connection Trigger
         if (macAddress != null && bluetoothGatt == null) {
             val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
             val device = bluetoothManager.adapter.getRemoteDevice(macAddress)
@@ -130,10 +118,11 @@ class BluetoothLeService : Service() {
             bluetoothGatt = device.connectGatt(this, false, gattCallback)
         }
 
-        if (payload1 != null && payload2 != null && bluetoothGatt != null) {
-            serviceScope.launch {
-                sendNavigationUpdate(payload1, payload2)
-            }
+        // 2. Dummy Data Trigger (Unified Queue Manager)
+        if (payload1 != null && payload2 != null) {
+            Log.d(TAG, "Received new navigation data from Dummy button. Queueing for next heartbeat.")
+            currentPayload1 = payload1
+            currentPayload2 = payload2
         }
 
         return START_STICKY
@@ -145,11 +134,9 @@ class BluetoothLeService : Service() {
         val writeChar = service?.getCharacteristic(TVS_WRITE_CHAR_UUID) ?: return
 
         writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-
-        // Wait ~190ms AFTER the descriptor write callback before starting the handshake
         delay(190)
 
-        // Packet 1: ZP Mobile Status Sync
+        // Packet 1
         val zpPacket = byteArrayOf(
             0x5a.toByte(), 0xf1.toByte(), 0x03, 0x09, 0x00, 0x02, 0x00, 0x00,
             0x00, 0x03, 0x03, 0xea.toByte(), 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff.toByte()
@@ -157,13 +144,10 @@ class BluetoothLeService : Service() {
         @Suppress("DEPRECATION")
         writeChar.value = zpPacket
         @Suppress("DEPRECATION")
-        val success1 = gatt.writeCharacteristic(writeChar)
-        Log.d(TAG, "Handshake Packet 1 (ZP Status) sent. Success: $success1")
-
-        // CRITICAL FIX 1: Increase delay to 100ms so Android has time to receive the ACK
+        gatt.writeCharacteristic(writeChar)
         delay(100)
 
-        // Packet 2: [R Rider Identity Packet ("PRANAVA")
+        // Packet 2
         val rPacket = byteArrayOf(
             0x5b.toByte(), 0x52.toByte(), 0x50, 0x52, 0x41, 0x4e, 0x41, 0x56,
             0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff.toByte()
@@ -171,13 +155,10 @@ class BluetoothLeService : Service() {
         @Suppress("DEPRECATION")
         writeChar.value = rPacket
         @Suppress("DEPRECATION")
-        val success2 = gatt.writeCharacteristic(writeChar)
-        Log.d(TAG, "Handshake Packet 2 ([R Identity) sent. Success: $success2")
-
-        // CRITICAL FIX 2: The missing heartbeat sequence
+        gatt.writeCharacteristic(writeChar)
         delay(100)
 
-        // Packet 3: [J Initial Navigation Heartbeat
+        // Packet 3
         val jPacket = byteArrayOf(
             0x5b.toByte(), 0x4a.toByte(), 0x34, 0x50, 0x28, 0x00, 0x06, 0x0b,
             0x09, 0x01, 0x00, 0x04, 0x03, 0x04, 0x1a, 0x00, 0x01, 0x00, 0x00, 0xff.toByte()
@@ -185,39 +166,63 @@ class BluetoothLeService : Service() {
         @Suppress("DEPRECATION")
         writeChar.value = jPacket
         @Suppress("DEPRECATION")
-        val success3 = gatt.writeCharacteristic(writeChar)
-        Log.d(TAG, "Handshake Packet 3 ([J Heartbeat) sent. Success: $success3")
+        gatt.writeCharacteristic(writeChar)
 
         Log.d(TAG, "Handshake completed! Dashboard should now say 'Connection Successful'.")
         startHeartbeat(gatt, writeChar)
     }
 
     @SuppressLint("MissingPermission")
-    private suspend fun sendNavigationUpdate(payload1: ByteArray, payload2: ByteArray) {
-        bluetoothGatt?.let { gatt ->
-            val service = gatt.getService(TVS_SERVICE_UUID)
-            val writeChar = service?.getCharacteristic(TVS_WRITE_CHAR_UUID)
-            
-            writeChar?.let {
-                it.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            
-                // Write Packet 1 (ZP Control Payload)
-                it.value = payload1
-                var success = gatt.writeCharacteristic(it)
-                Log.d(TAG, "Payload 1 (ZP/Control) sent. Success: $success")
+    private fun startHeartbeat(gatt: BluetoothGatt, writeChar: BluetoothGattCharacteristic) {
+        heartbeatJob?.cancel()
+        heartbeatJob = serviceScope.launch {
+            Log.d(TAG, "Starting unified 2-second Heartbeat/Navigation loop...")
+            while (isActive) {
+                val p1 = currentPayload1
+                val p2 = currentPayload2
 
-                // Delay slightly to prevent dropping packets on BLE MTU queue
-                delay(400)
+                if (p1 != null && p2 != null) {
 
-                // Write Packet 2 ([J String Payload)
-                it.value = payload2
-                success = gatt.writeCharacteristic(it)
-                Log.d(TAG, "Payload 2 ([J/Text) sent. Success: $success")
-            } ?: run {
-                Log.e(TAG, "TVS Write Characteristic not found.")
+                    // 1. Force P1 to use 'ZO' (5A 4F) - Navigation Control Header
+                    p1[0] = 0x5a.toByte()
+                    p1[1] = 0x4f.toByte()
+
+                    // 2. Force P2 to use '[O' (5B 4F) - Navigation Text Header
+                    p2[0] = 0x5b.toByte()
+                    p2[1] = 0x4f.toByte()
+
+                    // 3. Keep the Null Terminator to prevent the buffer overflow crash!
+                    p2[18] = 0x00.toByte()
+
+                    val hex1 = p1.joinToString(" ") { "%02X".format(it) }
+                    val hex2 = p2.joinToString(" ") { "%02X".format(it) }
+                    Log.d(TAG, "Attempting P1 (Control): $hex1")
+                    Log.d(TAG, "Attempting P2 (Nav): $hex2")
+
+                    writeChar.value = p1
+                    gatt.writeCharacteristic(writeChar)
+                    delay(300)
+
+                    writeChar.value = p2
+                    gatt.writeCharacteristic(writeChar)
+
+                    sendBroadcast(Intent(ACTION_NAVIGATION_SENT))
+                    currentPayload1 = null
+                    currentPayload2 = null
+                    Log.d(TAG, "Nav data sent, UI notified, and queue cleared. Returning to blank heartbeats.")
+                } else {
+                    val jPacket = byteArrayOf(
+                        0x5b.toByte(), 0x4a.toByte(), 0x34, 0x50, 0x28, 0x00, 0x06, 0x0b,
+                        0x09, 0x01, 0x00, 0x04, 0x03, 0x04, 0x1a, 0x00, 0x01, 0x00, 0x00, 0xff.toByte()
+                    )
+                    @Suppress("DEPRECATION")
+                    writeChar.value = jPacket
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(writeChar)
+                }
+
+                delay(2000) // Strict 2-second interval for Watchdog
             }
-        } ?: run {
-            Log.e(TAG, "BluetoothGatt is null. Not connected to scooter.")
         }
     }
 
@@ -225,13 +230,11 @@ class BluetoothLeService : Service() {
         val channelId = "tvs_bridge_channel"
         val channel = NotificationChannel(channelId, "TVS Bridge BLE", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
-
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("TVS Navigation Bridge")
             .setContentText("Connected to dashboard")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .build()
-
         startForeground(1, notification)
     }
 
@@ -243,32 +246,13 @@ class BluetoothLeService : Service() {
         bluetoothGatt = null
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
+
     companion object {
         const val ACTION_SEND_NAVIGATION = "com.pranava.tvsbridge.ACTION_SEND_NAVIGATION"
+        const val ACTION_NAVIGATION_SENT = "com.pranava.tvsbridge.NAVIGATION_SENT"
         const val EXTRA_PAYLOAD_1 = "payload1"
         const val EXTRA_PAYLOAD_2 = "payload2"
         const val EXTRA_MAC_ADDRESS = "mac_address"
-    }
-@SuppressLint("MissingPermission")
-    private fun startHeartbeat(gatt: BluetoothGatt, writeChar: BluetoothGattCharacteristic) {
-        heartbeatJob?.cancel() // Cancel any existing loop
-        heartbeatJob = serviceScope.launch {
-            Log.d(TAG, "Starting 2-second Heartbeat loop to keep dashboard alive...")
-            while (isActive) {
-                delay(2000) // Strict 2-second interval
-                val jPacket = byteArrayOf(
-                    0x5b.toByte(), 0x4a.toByte(), 0x34, 0x50, 0x28, 0x00, 0x06, 0x0b, 
-                    0x09, 0x01, 0x00, 0x04, 0x03, 0x04, 0x1a, 0x00, 0x01, 0x00, 0x00, 0xff.toByte()
-                )
-                @Suppress("DEPRECATION")
-                writeChar.value = jPacket
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(writeChar)
-                // We won't log this to avoid flooding Logcat, but it is keeping the scooter awake!
-            }
-        }
     }
 }
