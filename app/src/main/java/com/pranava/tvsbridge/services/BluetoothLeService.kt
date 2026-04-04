@@ -21,6 +21,7 @@ class BluetoothLeService : Service() {
     // Coroutine Scope for BLE operations
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
+    private var heartbeatJob: Job? = null
 
     // TVS Jupiter 125 UUIDs
     private val TVS_SERVICE_UUID = UUID.fromString("5456534d-5647-5341-5342-454e544f5251") 
@@ -44,6 +45,7 @@ class BluetoothLeService : Service() {
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(TAG, "Disconnected from GATT server.")
+                heartbeatJob?.cancel()
                 bluetoothGatt?.close()
                 bluetoothGatt = null
             }
@@ -187,6 +189,7 @@ class BluetoothLeService : Service() {
         Log.d(TAG, "Handshake Packet 3 ([J Heartbeat) sent. Success: $success3")
 
         Log.d(TAG, "Handshake completed! Dashboard should now say 'Connection Successful'.")
+        startHeartbeat(gatt, writeChar)
     }
 
     @SuppressLint("MissingPermission")
@@ -248,5 +251,24 @@ class BluetoothLeService : Service() {
         const val EXTRA_PAYLOAD_1 = "payload1"
         const val EXTRA_PAYLOAD_2 = "payload2"
         const val EXTRA_MAC_ADDRESS = "mac_address"
+    }
+@SuppressLint("MissingPermission")
+    private fun startHeartbeat(gatt: BluetoothGatt, writeChar: BluetoothGattCharacteristic) {
+        heartbeatJob?.cancel() // Cancel any existing loop
+        heartbeatJob = serviceScope.launch {
+            Log.d(TAG, "Starting 2-second Heartbeat loop to keep dashboard alive...")
+            while (isActive) {
+                delay(2000) // Strict 2-second interval
+                val jPacket = byteArrayOf(
+                    0x5b.toByte(), 0x4a.toByte(), 0x34, 0x50, 0x28, 0x00, 0x06, 0x0b, 
+                    0x09, 0x01, 0x00, 0x04, 0x03, 0x04, 0x1a, 0x00, 0x01, 0x00, 0x00, 0xff.toByte()
+                )
+                @Suppress("DEPRECATION")
+                writeChar.value = jPacket
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(writeChar)
+                // We won't log this to avoid flooding Logcat, but it is keeping the scooter awake!
+            }
+        }
     }
 }
