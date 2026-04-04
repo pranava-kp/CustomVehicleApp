@@ -2,6 +2,16 @@
 
 This Android application acts as a custom bridge between your smartphone and the TVS Jupiter 125 dashboard. It intercepts real-time turn-by-turn navigation data from Google Maps and forwards it directly to the scooter's display via Bluetooth Low Energy (BLE), effectively replacing the need to use the default OEM navigation app.
 
+## Project Motivation & Goals
+
+The primary catalyst for this project was the desire for a seamless, "Android Auto" style experience for the TVS Jupiter 125. Standard background Bluetooth scanners require an app to remain active or demand **Unrestricted Battery Usage**, which causes massive battery drain.
+
+**Core Objectives:**
+1. **Zero-Touch Auto-Connection:** Utilize Android's native `CompanionDeviceService` (Presence Observation) to let the OS hardware automatically detect the scooter's MAC address and wake the app from a dead sleep, requiring zero background battery drain.
+2. **Bypass Official Navigation:** Ditch the restrictive official TVS Connect app and its default Mappls routing.
+3. **Google Maps Integration:** Intercept live turn-by-turn directions from Google Maps via `NotificationListenerService` and translate them into the TVS Bluetooth architecture.
+4. **Native Dashboard Rendering:** Inject the translated navigation payloads directly into the scooter's LCD using reverse-engineered BLE headers and watchdog-compliant heartbeat loops.
+
 ## Project Phases
 
 This project is structured around five core development phases:
