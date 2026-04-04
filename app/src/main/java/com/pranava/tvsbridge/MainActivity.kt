@@ -76,8 +76,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startBleService() {
-        val intent = Intent(this, com.pranava.tvsbridge.services.BluetoothLeService::class.java)
-        startForegroundService(intent)
+        // Retrieve the saved MAC address we just got from the Companion Device Manager
+        val prefs = getSharedPreferences("tvs_prefs", Context.MODE_PRIVATE)
+        val macAddress = prefs.getString("scooter_mac", null)
+
+        if (macAddress != null) {
+            val intent = Intent(this, com.pranava.tvsbridge.services.BluetoothLeService::class.java).apply {
+                // Pass the MAC address to the background service!
+                putExtra("mac_address", macAddress)
+            }
+            startForegroundService(intent)
+            android.util.Log.d("MainActivity", "Starting BLE Service with MAC: $macAddress")
+        } else {
+            android.util.Log.e("MainActivity", "Cannot start BLE Service: MAC Address is missing!")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -116,23 +128,30 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnAssociateScooter.setOnClickListener {
+            // Let the user know the button was pressed
+            binding.tvPayloadResult.text = "Initializing Scanner..."
+            android.util.Log.d("MainActivity", "Associate button clicked. Starting CDM scan.")
+
             val deviceFilter = BluetoothLeDeviceFilter.Builder()
                 .setNamePattern(Pattern.compile("^.*(TVS|TVAM).*", Pattern.CASE_INSENSITIVE))
                 .build()
 
             val pairingRequest = AssociationRequest.Builder()
                 .addDeviceFilter(deviceFilter)
-                .setSingleDevice(true)
+                // REMOVED .setSingleDevice(true) so Android forces the Scanning UI to appear
                 .build()
 
             deviceManager.associate(pairingRequest, object : CompanionDeviceManager.Callback() {
                 override fun onDeviceFound(chooserLauncher: android.content.IntentSender) {
+                    android.util.Log.d("MainActivity", "CDM Device Found! Launching system chooser...")
                     val intentSenderRequest = androidx.activity.result.IntentSenderRequest.Builder(chooserLauncher).build()
                     pairingLauncher.launch(intentSenderRequest)
                 }
 
                 override fun onFailure(error: CharSequence?) {
-                    binding.tvPayloadResult.text = "CDM Error: $error"
+                    android.util.Log.e("MainActivity", "CDM Error: $error")
+                    // If you get an error, it will likely be "Missing Location Permission"
+                    binding.tvPayloadResult.text = "CDM Error: $error\n(Check if Location/Nearby Devices is enabled in Android Settings)"
                 }
             }, null)
         }

@@ -4,23 +4,13 @@ import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
+import android.bluetooth.*
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import java.util.UUID
 
 class BluetoothLeService : Service() {
@@ -32,274 +22,231 @@ class BluetoothLeService : Service() {
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
-    // True TVS Jupiter 125 UUIDs
+    // TVS Jupiter 125 UUIDs
     private val TVS_SERVICE_UUID = UUID.fromString("5456534d-5647-5341-5342-454e544f5251") 
-    private val TVS_WRITE_CHAR_UUID = UUID.fromString("00005352-0000-1000-8000-00805f9b34fb") 
-    private val TVS_READ_CHAR_UUID = UUID.fromString("00005354-0000-1000-8000-00805f9b34fb") 
+    private val TVS_WRITE_CHAR_UUID = UUID.fromString("00005352-0000-1000-8000-00805f9b34fb")
     private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-
-    private var keepAliveJob: kotlinx.coroutines.Job? = null
-
-    companion object {
-        const val ACTION_SEND_NAVIGATION = "com.pranava.tvsbridge.action.SEND_NAVIGATION"
-        const val EXTRA_PAYLOAD_1 = "com.pranava.tvsbridge.extra.PAYLOAD_1"
-        const val EXTRA_PAYLOAD_2 = "com.pranava.tvsbridge.extra.PAYLOAD_2"
-    }
-
-    override fun onBind(intent: Intent?): IBinder? {
-        return null // Started service, not bound
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        startForegroundService()
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Auto-connect if associated
-        val prefs = getSharedPreferences("tvs_prefs", Context.MODE_PRIVATE)
-        val scooterMac = prefs.getString("scooter_mac", null)?.uppercase()
-        
-        if (scooterMac != null && bluetoothGatt == null) {
-            connectToDevice(scooterMac)
-        }
-
-        if (intent?.action == ACTION_SEND_NAVIGATION) {
-            val payload1 = intent.getByteArrayExtra(EXTRA_PAYLOAD_1)
-            val payload2 = intent.getByteArrayExtra(EXTRA_PAYLOAD_2)
-            if (payload1 != null && payload2 != null) {
-                sendNavigationData(payload1, payload2)
-            }
-        }
-        return START_STICKY
-    }
-
-    private fun startForegroundService() {
-        val channelId = "ble_service_channel"
-        val channel = NotificationChannel(
-            channelId,
-            "BLE Connection Service",
-            NotificationManager.IMPORTANCE_LOW
-        )
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.createNotificationChannel(channel)
-
-        @Suppress("DEPRECATION") // Assuming a simple notification
-        val notification = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("TVS Bridge Active")
-            .setContentText("Maintaining connection to dashboard...")
-            .build()
-            
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-            } else {
-                startForeground(1, notification)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start foreground service: ${e.message}")
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    fun connectToDevice(deviceAddress: String) {
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val adapter = bluetoothManager.adapter
-        val device: BluetoothDevice? = adapter.getRemoteDevice(deviceAddress)
-        
-        device?.let {
-            Log.d(TAG, "Attempting to connect to $deviceAddress")
-            bluetoothGatt = it.connectGatt(this, false, gattCallback)
-        }
-    }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            Log.d(TAG, "onConnectionStateChange: status=$status, newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d(TAG, "Connected to GATT server. Discovering services...")
-                gatt.discoverServices()
+                Log.d(TAG, "Connected to GATT! Shifting to High Priority...")
+
+                // 1. Force High Priority (Prevents dashboard timeout)
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+
+                // 2. Request MTU Size Expansion (Crucial TVS Requirement)
+                serviceScope.launch {
+                    delay(100) // Brief pause to let priority shift settle
+                    Log.d(TAG, "Requesting MTU Expansion...")
+                    gatt.requestMtu(256)
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.d(TAG, "Disconnected from GATT server. Status code: $status")
-                stopKeepAlive()
+                Log.d(TAG, "Disconnected from GATT server.")
+                bluetoothGatt?.close()
                 bluetoothGatt = null
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d(TAG, "MTU successfully negotiated to: $mtu. Discovering services...")
+                // 3. ONLY discover services AFTER MTU is agreed upon
+                gatt.discoverServices()
+            } else {
+                Log.e(TAG, "MTU negotiation failed. Attempting to proceed anyway...")
+                gatt.discoverServices()
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.d(TAG, "Services discovered successfully.")
-                // To avoid sending packets larger than the default 20 bytes 
-                // we forcefully request the correct MTU size that TVS expects (141)
-                val mtuRequested = gatt.requestMtu(141)
-                if (!mtuRequested) {
-                    Log.w(TAG, "MTU request failed instantly. Falling back to default payload sequence.")
-                    sendInitialHandshake()
-                }
-            } else {
-                Log.w(TAG, "onServicesDiscovered failed with status: $status")
-            }
-        }
-        
-        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
-            super.onMtuChanged(gatt, mtu, status)
-            Log.d(TAG, "MTU changed to $mtu, Status: $status. Proceeding to Handshake.")
-            sendInitialHandshake()
-        }
-        
-        override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
-            Log.d(TAG, "onCharacteristicWrite status: $status")
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun sendInitialHandshake() {
-        serviceScope.launch {
-            bluetoothGatt?.let { gatt ->
+                Log.d(TAG, "Services discovered. Hunting for CCCD Notification Descriptor...")
                 val service = gatt.getService(TVS_SERVICE_UUID)
-                if (service == null) {
-                    Log.e(TAG, "TVS Service $TVS_SERVICE_UUID not found!")
-                    return@launch
-                }
 
-                val readChar = service.getCharacteristic(TVS_READ_CHAR_UUID)
-                val writeChar = service.getCharacteristic(TVS_WRITE_CHAR_UUID)
+                if (service != null) {
+                    var descriptorFound = false
 
-                if (readChar != null && writeChar != null) {
-                    Log.i(TAG, "🚀 Initiating TVS Handshake sequence...")
-                    
-                    // Enable Notifications on Read Characteristic first (Unlock)
-                    gatt.setCharacteristicNotification(readChar, true)
-                    val descriptor = readChar.getDescriptor(CCCD_UUID)
-                    if (descriptor != null) {
-                        @Suppress("DEPRECATION")
-                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        @Suppress("DEPRECATION")
-                        gatt.writeDescriptor(descriptor)
-                        Log.i(TAG, "Enabled Notifications on read characteristic. Waiting 1s...")
-                        delay(1000)
+                    // Loop through ALL characteristics to find the one with the CCCD
+                    for (characteristic in service.characteristics) {
+                        val descriptor = characteristic.getDescriptor(CCCD_UUID)
+                        if (descriptor != null) {
+                            Log.d(TAG, "Found CCCD on characteristic: ${characteristic.uuid}")
+
+                            // 4. Subscribe to notifications
+                            gatt.setCharacteristicNotification(characteristic, true)
+
+                            // 5. Write 0x01 0x00 to CCCD
+                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            gatt.writeDescriptor(descriptor)
+                            Log.d(TAG, "Wrote CCCD descriptor. Waiting for callback...")
+                            descriptorFound = true
+                            break // Stop looping once we unlock it
+                        }
                     }
 
-                    // Ensure write type is set correctly
-                    writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-
-                    // 1. Rider Name ([R)
-                    val riderPacket = NavigationTranslator.createRiderNamePacket("krid")
-                    @Suppress("DEPRECATION")
-                    writeChar.value = riderPacket
-                    @Suppress("DEPRECATION")
-                    gatt.writeCharacteristic(writeChar)
-                    delay(400)
-                    
-                    // 2. Mobile Status (ZP)
-                    val statusPacket = NavigationTranslator.createMobileStatusPacket()
-                    @Suppress("DEPRECATION")
-                    writeChar.value = statusPacket
-                    @Suppress("DEPRECATION")
-                    gatt.writeCharacteristic(writeChar)
-                    delay(400)
-                    
-                    // 3. Location Sync ([L)
-                    val locationPacket = NavigationTranslator.createLocationPacket("Ready")
-                    @Suppress("DEPRECATION")
-                    writeChar.value = locationPacket
-                    @Suppress("DEPRECATION")
-                    gatt.writeCharacteristic(writeChar)
-                    
-                    Log.i(TAG, "✅ Handshake sequence completed.")
-                    
-                    // Start sending periodic keep-alive pings to prevent the scooter from disconnecting
-                    startKeepAlive()
-
+                    if (!descriptorFound) {
+                        Log.e(TAG, "FATAL: Could not find any characteristic with a CCCD descriptor!")
+                    }
                 } else {
-                    Log.e(TAG, "Handshake failed: Characteristics not found.")
+                    Log.e(TAG, "TVS Service UUID not found on device.")
+                }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS && descriptor.uuid == CCCD_UUID) {
+                Log.d(TAG, "Dashboard unlocked successfully! Initiating Handshake...")
+
+                // 6. Fire the 10ms Handshake via Coroutines
+                serviceScope.launch {
+                    sendHandshakeSequence(gatt)
                 }
             }
         }
     }
 
-    private fun startKeepAlive() {
-        stopKeepAlive()
-        keepAliveJob = serviceScope.launch {
-            while (true) {
-                // Delay for 10 seconds between pings
-                delay(10000)
-                sendKeepAlivePing()
-            }
-        }
-        Log.d(TAG, "Started keep-alive ping loop.")
-    }
-
-    private fun stopKeepAlive() {
-        keepAliveJob?.cancel()
-        keepAliveJob = null
+    override fun onCreate() {
+        super.onCreate()
+        startKeepAlive()
     }
 
     @SuppressLint("MissingPermission")
-    private fun sendKeepAlivePing() {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val macAddress = intent?.getStringExtra("mac_address")
+        val payload1 = intent?.getByteArrayExtra("payload1")
+        val payload2 = intent?.getByteArrayExtra("payload2")
+
+        if (macAddress != null && bluetoothGatt == null) {
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val device = bluetoothManager.adapter.getRemoteDevice(macAddress)
+            Log.d(TAG, "Connecting to scooter: $macAddress")
+            bluetoothGatt = device.connectGatt(this, false, gattCallback)
+        }
+
+        if (payload1 != null && payload2 != null && bluetoothGatt != null) {
+            serviceScope.launch {
+                sendNavigationUpdate(payload1, payload2)
+            }
+        }
+
+        return START_STICKY
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun sendHandshakeSequence(gatt: BluetoothGatt) {
+        val service = gatt.getService(TVS_SERVICE_UUID)
+        val writeChar = service?.getCharacteristic(TVS_WRITE_CHAR_UUID) ?: return
+
+        writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+
+        // Wait ~190ms AFTER the descriptor write callback before starting the handshake
+        delay(190)
+
+        // Packet 1: ZP Mobile Status Sync
+        val zpPacket = byteArrayOf(
+            0x5a.toByte(), 0xf1.toByte(), 0x03, 0x09, 0x00, 0x02, 0x00, 0x00,
+            0x00, 0x03, 0x03, 0xea.toByte(), 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff.toByte()
+        )
+        @Suppress("DEPRECATION")
+        writeChar.value = zpPacket
+        @Suppress("DEPRECATION")
+        val success1 = gatt.writeCharacteristic(writeChar)
+        Log.d(TAG, "Handshake Packet 1 (ZP Status) sent. Success: $success1")
+
+        // CRITICAL FIX 1: Increase delay to 100ms so Android has time to receive the ACK
+        delay(100)
+
+        // Packet 2: [R Rider Identity Packet ("PRANAVA")
+        val rPacket = byteArrayOf(
+            0x5b.toByte(), 0x52.toByte(), 0x50, 0x52, 0x41, 0x4e, 0x41, 0x56,
+            0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff.toByte()
+        )
+        @Suppress("DEPRECATION")
+        writeChar.value = rPacket
+        @Suppress("DEPRECATION")
+        val success2 = gatt.writeCharacteristic(writeChar)
+        Log.d(TAG, "Handshake Packet 2 ([R Identity) sent. Success: $success2")
+
+        // CRITICAL FIX 2: The missing heartbeat sequence
+        delay(100)
+
+        // Packet 3: [J Initial Navigation Heartbeat
+        val jPacket = byteArrayOf(
+            0x5b.toByte(), 0x4a.toByte(), 0x34, 0x50, 0x28, 0x00, 0x06, 0x0b,
+            0x09, 0x01, 0x00, 0x04, 0x03, 0x04, 0x1a, 0x00, 0x01, 0x00, 0x00, 0xff.toByte()
+        )
+        @Suppress("DEPRECATION")
+        writeChar.value = jPacket
+        @Suppress("DEPRECATION")
+        val success3 = gatt.writeCharacteristic(writeChar)
+        Log.d(TAG, "Handshake Packet 3 ([J Heartbeat) sent. Success: $success3")
+
+        Log.d(TAG, "Handshake completed! Dashboard should now say 'Connection Successful'.")
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun sendNavigationUpdate(payload1: ByteArray, payload2: ByteArray) {
         bluetoothGatt?.let { gatt ->
             val service = gatt.getService(TVS_SERVICE_UUID)
             val writeChar = service?.getCharacteristic(TVS_WRITE_CHAR_UUID)
             
             writeChar?.let {
-                // By sending the mobile status packet periodically, we keep the connection alive
-                // and keep the dashboard's clock/battery updated.
-                val pingPacket = NavigationTranslator.createMobileStatusPacket()
                 it.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                @Suppress("DEPRECATION")
-                it.value = pingPacket
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(it)
-                Log.d(TAG, "Keep-alive ping sent (ZP).")
+            
+                // Write Packet 1 (ZP Control Payload)
+                it.value = payload1
+                var success = gatt.writeCharacteristic(it)
+                Log.d(TAG, "Payload 1 (ZP/Control) sent. Success: $success")
+
+                // Delay slightly to prevent dropping packets on BLE MTU queue
+                delay(400)
+
+                // Write Packet 2 ([J String Payload)
+                it.value = payload2
+                success = gatt.writeCharacteristic(it)
+                Log.d(TAG, "Payload 2 ([J/Text) sent. Success: $success")
+            } ?: run {
+                Log.e(TAG, "TVS Write Characteristic not found.")
             }
+        } ?: run {
+            Log.e(TAG, "BluetoothGatt is null. Not connected to scooter.")
         }
     }
 
+    private fun startKeepAlive() {
+        val channelId = "tvs_bridge_channel"
+        val channel = NotificationChannel(channelId, "TVS Bridge BLE", NotificationManager.IMPORTANCE_LOW)
+        getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
 
-    @SuppressLint("MissingPermission")
-    private fun sendNavigationData(payload1: ByteArray, payload2: ByteArray) {
-        serviceScope.launch {
-            bluetoothGatt?.let { gatt ->
-                val service = gatt.getService(TVS_SERVICE_UUID)
-                val writeChar = service?.getCharacteristic(TVS_WRITE_CHAR_UUID)
-                
-                writeChar?.let {
-                    it.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                
-                    // Write Packet 1 (ZP Control Payload)
-                    @Suppress("DEPRECATION")
-                    it.value = payload1
-                    @Suppress("DEPRECATION")
-                    var success = gatt.writeCharacteristic(it)
-                    Log.d(TAG, "Payload 1 (ZP/Control) sent. Success: $success")
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("TVS Navigation Bridge")
+            .setContentText("Connected to dashboard")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .build()
 
-                    // Delay slightly to prevent dropping packets on BLE MTU queue
-                    delay(400)
-
-                    // Write Packet 2 ([J String Payload)
-                    @Suppress("DEPRECATION")
-                    it.value = payload2
-                    @Suppress("DEPRECATION")
-                    success = gatt.writeCharacteristic(it)
-                    Log.d(TAG, "Payload 2 ([J/Text) sent. Success: $success")
-                } ?: run {
-                    Log.e(TAG, "TVS Write Characteristic not found.")
-                }
-            } ?: run {
-                Log.e(TAG, "BluetoothGatt is null. Not connected to scooter.")
-            }
-        }
+        startForeground(1, notification)
     }
 
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
         super.onDestroy()
-        stopKeepAlive()
         serviceJob.cancel()
         bluetoothGatt?.close()
         bluetoothGatt = null
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
+    }
+    companion object {
+        const val ACTION_SEND_NAVIGATION = "com.pranava.tvsbridge.ACTION_SEND_NAVIGATION"
+        const val EXTRA_PAYLOAD_1 = "payload1"
+        const val EXTRA_PAYLOAD_2 = "payload2"
+        const val EXTRA_MAC_ADDRESS = "mac_address"
     }
 }
