@@ -4,6 +4,7 @@ import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import android.content.Intent
 
 class MapsNotificationListenerService : NotificationListenerService() {
 
@@ -43,6 +44,7 @@ class MapsNotificationListenerService : NotificationListenerService() {
             }
 
             // Using dummy ETA/Total settings for now
+            // We can parse ETA/Time from Map's subtext in future updates if needed.
             val etaInSeconds: Long = 600
             val totalDistanceMeters = 5000 
             
@@ -55,16 +57,17 @@ class MapsNotificationListenerService : NotificationListenerService() {
                 instructionText
             )
 
-            // Forward both payloads to BLE Service
+            // Forward both payloads to BLE Service via a broadcast since starting services from background is restricted
             try {
-                val intent = android.content.Intent(this, BluetoothLeService::class.java).apply {
-                    action = BluetoothLeService.ACTION_SEND_NAVIGATION
+                val intent = Intent(BluetoothLeService.ACTION_SEND_NAVIGATION).apply {
                     putExtra(BluetoothLeService.EXTRA_PAYLOAD_1, payloads.first)
                     putExtra(BluetoothLeService.EXTRA_PAYLOAD_2, payloads.second)
+                    setPackage(this@MapsNotificationListenerService.packageName)
                 }
-                startForegroundService(intent)
+                this@MapsNotificationListenerService.sendBroadcast(intent)
+                Log.d(TAG, "Broadcasted live nav payloads to BluetoothLeService queue.")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start BLE Service: ${e.message}")
+                Log.e(TAG, "Failed to broadcast to BLE Service: ${e.message}")
             }
         }
     }
@@ -94,6 +97,17 @@ class MapsNotificationListenerService : NotificationListenerService() {
         super.onNotificationRemoved(sbn)
         if (sbn?.packageName == MAPS_PACKAGE) {
             Log.d(TAG, "Maps Notification removed. Navigation possibly ended.")
+            
+            // Tell the BLE service to stop navigating and go back to blank heartbeats!
+            try {
+                val intent = Intent(BluetoothLeService.ACTION_SEND_NAVIGATION).apply {
+                    putExtra(BluetoothLeService.EXTRA_STOP_NAVIGATION, true)
+                    setPackage(this@MapsNotificationListenerService.packageName)
+                }
+                this@MapsNotificationListenerService.sendBroadcast(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to broadcast stop to BLE Service: ${e.message}")
+            }
         }
     }
 }

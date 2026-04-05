@@ -18,6 +18,11 @@ import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import android.os.Build
 import android.widget.Toast
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.nfc.NfcAdapter
+import android.nfc.Tag
 
 class MainActivity : AppCompatActivity() {
 
@@ -77,6 +82,14 @@ class MainActivity : AppCompatActivity() {
             } else {
                 binding.tvPayloadResult.text = "CDM Error: Could not extract device data."
             }
+        }
+        
+        // Hide the loading spinner regardless of whether association was successful or cancelled
+        binding.loadingSpinner.visibility = View.GONE
+        
+        // Clean up the scanner text state
+        if (binding.tvPayloadResult.text.toString() == "Initializing Scanner...") {
+            binding.tvPayloadResult.text = ""
         }
     }
     private val navSuccessReceiver = object : BroadcastReceiver() {
@@ -151,6 +164,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateStatus()
+        
+        // Handle NFC Deep Link Invocation
+        handleIntent(intent)
 
         // ALWAYS MAKE SURE WE ARE OBSERVING THE PRESENCE IF WE HAVE A DEVICE
         val prefs = getSharedPreferences("tvs_prefs", Context.MODE_PRIVATE)
@@ -170,32 +186,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnAssociateScooter.setOnClickListener {
-            // Let the user know the button was pressed
-            binding.tvPayloadResult.text = "Initializing Scanner..."
-            android.util.Log.d("MainActivity", "Associate button clicked. Starting CDM scan.")
-
-            val deviceFilter = BluetoothLeDeviceFilter.Builder()
-                .setNamePattern(Pattern.compile("^.*(TVS|TVAM).*", Pattern.CASE_INSENSITIVE))
-                .build()
-
-            val pairingRequest = AssociationRequest.Builder()
-                .addDeviceFilter(deviceFilter)
-                // REMOVED .setSingleDevice(true) so Android forces the Scanning UI to appear
-                .build()
-
-            deviceManager.associate(pairingRequest, object : CompanionDeviceManager.Callback() {
-                override fun onDeviceFound(chooserLauncher: android.content.IntentSender) {
-                    android.util.Log.d("MainActivity", "CDM Device Found! Launching system chooser...")
-                    val intentSenderRequest = androidx.activity.result.IntentSenderRequest.Builder(chooserLauncher).build()
-                    pairingLauncher.launch(intentSenderRequest)
-                }
-
-                override fun onFailure(error: CharSequence?) {
-                    android.util.Log.e("MainActivity", "CDM Error: $error")
-                    // If you get an error, it will likely be "Missing Location Permission"
-                    binding.tvPayloadResult.text = "CDM Error: $error\n(Check if Location/Nearby Devices is enabled in Android Settings)"
-                }
-            }, null)
+            initiateAssociation(null)
         }
 
         binding.btnTestDummyPayload.setOnClickListener {
@@ -228,6 +219,137 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+    
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val action = intent?.action
+        val data = intent?.data
+        
+        // Handle native NFC NDEF tag discovery intent (if the app was already open and in foreground)
+        if (NfcAdapter.ACTION_NDEF_DISCOVERED == action) {
+            val messages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES, android.nfc.NdefMessage::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES)
+            }
+
+            if (messages != null && messages.isNotEmpty()) {
+                val ndefMessage = messages[0] as android.nfc.NdefMessage
+                val records = ndefMessage.records
+                for (record in records) {
+                    val payload = String(record.payload)
+                    if (payload.contains("tvsbridge://")) {
+                        // Extract MAC address from payload like " tvsbridge://associate?mac=74:02:E1:A4:C0:99"
+                        // or " tvsbridge://74:02:E1:A4:C0:99" (Note: URI records often have a prefix byte)
+                        val cleanPayload = payload.substring(1) // skip the URI prefix byte
+                        val parsedUri = android.net.Uri.parse(cleanPayload)
+                        val targetMac = parsedUri.host ?: parsedUri.getQueryParameter("mac")
+                        if (targetMac != null) {
+                            binding.tvPayloadResult.text = "NFC Tag Scanned in Foreground!\nAttempting to associate to: $targetMac"
+                            initiateAssociation(targetMac)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Handle standard deep link intents (when app was closed or opened via URL)
+        if (Intent.ACTION_VIEW == action && data != null) {
+            
+            // Check if this was opened via the GitHub App Link!
+            if (data.host == "github.com" && data.path?.startsWith("/pranava-kp/CustomVehicleApp") == true) {
+                val targetMac = data.getQueryParameter("mac")
+                if (targetMac != null) {
+                    binding.tvPayloadResult.text = "GitHub App Link Scanned!\nAttempting to associate to: $targetMac"
+                    initiateAssociation(targetMac)
+                }
+            }
+            
+            // Check if this was opened via our direct tvsbridge:// NFC Deep Link!
+            else if (data.scheme == "tvsbridge") {
+                // If it's a direct format like tvsbridge://74:02:E1:A4:C0:99
+                val targetMac = data.host ?: data.getQueryParameter("mac")
+                if (targetMac != null) {
+                    binding.tvPayloadResult.text = "NFC Tag Scanned!\nAttempting to associate to: $targetMac"
+                    // Trigger the association process specifically searching for this MAC address
+                    initiateAssociation(targetMac)
+                } else {
+                    binding.tvPayloadResult.text = "NFC Tag Scanned!\nNo MAC Address found in URL."
+                }
+            }
+        }
+    }
+
+    private fun initiateAssociation(targetMac: String?) {
+        binding.tvPayloadResult.text = "Initializing Scanner..."
+        binding.loadingSpinner.visibility = View.VISIBLE
+        android.util.Log.d("MainActivity", "Starting CDM scan. Target MAC: $targetMac")
+
+        val filterBuilder = BluetoothLeDeviceFilter.Builder()
+        
+        // If a specific MAC was provided by the NFC card, scan exclusively for it!
+        // Otherwise, fallback to the generic TVS name matching
+        if (targetMac != null && Pattern.matches("^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$", targetMac)) {
+            // Android's BluetoothLeDeviceFilter does not allow directly injecting a String MAC address. 
+            // It only accepts raw regex name matching.
+            filterBuilder.setNamePattern(Pattern.compile(".*")) // Accept any name to surface the scanner
+        } else {
+            filterBuilder.setNamePattern(Pattern.compile("^.*(TVS|TVAM).*", Pattern.CASE_INSENSITIVE))
+        }
+
+        val pairingRequest = AssociationRequest.Builder()
+            .addDeviceFilter(filterBuilder.build())
+            // Remove single device enforce so the UI always pops up, even if it doesn't see the scooter right away.
+            .build()
+            
+        // We set a manual timeout in case the Android scanner just hangs silently in the background
+        // and doesn't fire the onFailure callback immediately when the device isn't around.
+        val timeoutHandler = Handler(Looper.getMainLooper())
+        val timeoutRunnable = Runnable {
+            binding.loadingSpinner.visibility = View.GONE
+            binding.tvPayloadResult.text = "Device Not Detected!\nPlease turn on your scooter and try again."
+            Toast.makeText(this@MainActivity, "Device not found. Make sure it is turned on.", Toast.LENGTH_LONG).show()
+            // We can't reliably cancel a CDM association request on all Android versions, 
+            // but we can update the UI so the user isn't stuck waiting forever.
+        }
+        timeoutHandler.postDelayed(timeoutRunnable, 7000) // 7 second timeout
+
+        deviceManager.associate(pairingRequest, object : CompanionDeviceManager.Callback() {
+            override fun onDeviceFound(chooserLauncher: android.content.IntentSender) {
+                timeoutHandler.removeCallbacks(timeoutRunnable) // Scanner worked, kill the manual timeout!
+                android.util.Log.d("MainActivity", "CDM Device Found! Launching system chooser...")
+                // We DO hide the spinner here now! Because the system bottom-sheet is fully rendered.
+                binding.loadingSpinner.visibility = View.GONE
+                if (binding.tvPayloadResult.text.toString() == "Initializing Scanner...") {
+                    binding.tvPayloadResult.text = ""
+                }
+                
+                val intentSenderRequest = androidx.activity.result.IntentSenderRequest.Builder(chooserLauncher).build()
+                pairingLauncher.launch(intentSenderRequest)
+            }
+
+            override fun onFailure(error: CharSequence?) {
+                timeoutHandler.removeCallbacks(timeoutRunnable)
+                android.util.Log.e("MainActivity", "CDM Error: $error")
+                binding.loadingSpinner.visibility = View.GONE
+                
+                // Format the error nicely if the device wasn't physically nearby
+                if (error?.contains("No devices found") == true || error?.contains("timeout") == true || error?.contains("timed out") == true) {
+                    binding.tvPayloadResult.text = "Device Not Detected!\nPlease turn on your scooter and try again."
+                    Toast.makeText(this@MainActivity, "Device not found. Make sure it is turned on.", Toast.LENGTH_LONG).show()
+                } else {
+                    binding.tvPayloadResult.text = "CDM Error: $error\n(Check if Location/Nearby Devices is enabled in Android Settings)"
+                }
+            }
+        }, null)
+    }
 
     override fun onResume() {
         super.onResume()
@@ -247,9 +369,21 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(navSuccessReceiver, filter)
         }
+        
+        // Re-ensure presence observation when app returns to foreground
+        val prefs_mac = getSharedPreferences("tvs_prefs", Context.MODE_PRIVATE)
+        val macAddress = prefs_mac.getString("scooter_mac", null)
+        if (macAddress != null) {
+             try {
+                 deviceManager.startObservingDevicePresence(macAddress)
+                 android.util.Log.d("MainActivity", "Ensuring observation for $macAddress on resume")
+             } catch (e: Exception) {
+                 android.util.Log.e("MainActivity", "Failed to start observing device presence: ${e.message}")
+             }
+        }
     }
 
-    // NEW: Stop listening when the app is in the background
+    // NEW: Stop listening when the background app returns
     override fun onPause() {
         super.onPause()
         unregisterReceiver(navSuccessReceiver)

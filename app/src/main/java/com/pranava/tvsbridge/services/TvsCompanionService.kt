@@ -28,14 +28,15 @@ class TvsCompanionService : CompanionDeviceService() {
             Toast.makeText(applicationContext, "🛴 TVS Scooter Detected! Connecting in background...", Toast.LENGTH_LONG).show()
         }
 
-        // 2. Show a temporary Heads-Up Notification so you know it worked
-        showWakeUpNotification()
-
-        // 3. Start the actual background connection service
-        val intent = Intent(this, BluetoothLeService::class.java).apply {
-            putExtra("mac_address", address)
+        // 2. Start the actual background connection service
+        try {
+            val intent = Intent(this, BluetoothLeService::class.java).apply {
+                putExtra("mac_address", address)
+            }
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground BLE service: ${e.message}")
         }
-        startForegroundService(intent)
     }
 
     override fun onDeviceDisappeared(address: String) {
@@ -43,35 +44,8 @@ class TvsCompanionService : CompanionDeviceService() {
         Handler(Looper.getMainLooper()).post {
             Toast.makeText(applicationContext, "TVS Scooter Disconnected", Toast.LENGTH_SHORT).show()
         }
+        
+        // Optional: stop the BLE service when device disappears
+        // stopService(Intent(this, BluetoothLeService::class.java))
     }
-
-//    private fun showWakeUpNotification() {
-//        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-//
-//        // Create a high-priority channel so it pops up on the screen (Heads-Up Notification)
-//        val channel = NotificationChannel(
-//            CHANNEL_ID,
-//            "Scooter Connection Alerts",
-//            NotificationManager.IMPORTANCE_HIGH
-//        ).apply {
-//            description = "Alerts when the scooter turns on and off"
-//        }
-//        notificationManager.createNotificationChannel(channel)
-//
-//        val intent = Intent(this, MainActivity::class.java)
-//        val pendingIntent = PendingIntent.getActivity(
-//            this, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-//        )
-//
-//        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-//            .setSmallIcon(android.R.drawable.ic_dialog_info)
-//            .setContentTitle("TVS Scooter Detected")
-//            .setContentText("Your app woke up successfully and is connecting.")
-//            .setPriority(NotificationCompat.PRIORITY_HIGH)
-//            .setAutoCancel(true) // Dismisses when clicked
-//            .setContentIntent(pendingIntent)
-//            .build()
-//
-//        notificationManager.notify(NOTIFICATION_ID, notification)
-//    }
 }

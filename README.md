@@ -41,16 +41,18 @@ This project is structured around five core development phases:
 
 ## Current State
 
-Phase 1 (Data Interception), Phase 2 (Reverse Engineering), and **Phase 3 (Connectivity & Handshake)** are now **100% COMPLETED**.
+Phase 1 (Data Interception), Phase 2 (Reverse Engineering), and **Phase 3 (Seamless Connectivity)** are now **100% COMPLETED**.
 
 **Progress Logs:**
 - ✅ **Data Interception:** Successfully parsing Google Maps notifications into dual-packet hex strings.
 - ✅ **Companion Device Manager:** Integrated native Android IoT discovery for persistent scooter association.
+- ✅ **Zero-Touch Auto-Connection:** Successfully implemented CDM Presence Observation (`TvsCompanionService`) for automatic background wake-up and GATT connection when the scooter turns on, effectively eliminating standby battery drain.
 - ✅ **Handshake Protocol:** Implemented the mandatory `[R` (Identity), `ZP` (Status), and `[J` (Heartbeat) sequence.
 - ✅ **Hardware Stability:** Negotiated BLE MTU expansion to 65 bytes and implemented a unified "Trojan Horse" heartbeat loop. The dashboard now maintains an infinite, stable connection without triggering the 15-second watchdog timer.
 - ✅ **Dashboard Navigation Unlock:** Successfully reverse-engineered the undocumented Navigation headers (`ZO` for Control, `[O` for Text).
 - ✅ **Buffer Overflow Patch:** Implemented real-time byte manipulation to inject a `0x00` Null Terminator before the checksum, preventing the dashboard's C-based firmware from crashing when reading custom strings.
-- 🟡 **Status (Next Step):** The Bluetooth pipeline is fully stable and rendering dummy graphics. Transitioning to Phase 4: wiring the `NotificationListenerService` GPS data stream directly into the unified BLE transmission queue.
+- ✅ **Accurate Dashboard Metrics (Time/Battery):** Reverse-engineered the TVS Connect APK to discover proprietary bitwise encoding. Successfully mapped the phone's battery percentage to the dashboard's 0-5 step scale and bitpacked it with the signal strength. Fixed 12-hour AM/PM time formatting for the vehicle's LCD clock.
+- 🟡 **Status (Next Step):** The Bluetooth pipeline is fully stable and rendering dummy graphics. We are now completing **Phase 4**: wiring the live Google Maps `NotificationListenerService` data stream directly into the unified BLE transmission queue, discarding the dummy testing button.
 
 ---
 

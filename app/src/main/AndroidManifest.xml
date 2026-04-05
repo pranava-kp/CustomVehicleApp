@@ -17,6 +17,7 @@
     <!-- Permissions for Companion Device Manager Presence Observation -->
     <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
 
     <uses-feature android:name="android.software.companion_device_setup" android:required="true" />
@@ -29,11 +30,46 @@
         
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Catch Native NFC NDEF Tag Discovery events when app is already open -->
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="tvsbridge" />
+            </intent-filter>
+
+            <!-- 1. Deep Link for NFC triggering. Matches: tvsbridge://associate?mac=... -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tvsbridge" android:host="associate" />
+            </intent-filter>
+
+            <!-- Also match tvsbridge://74:02:E1:A4:C0:99 exactly as shown in your NFC Tools screenshot -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tvsbridge" />
+            </intent-filter>
+
+            <!-- 2. GitHub App Link -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https"
+                      android:host="github.com"
+                      android:pathPrefix="/pranava-kp/CustomVehicleApp" />
+            </intent-filter>
+
         </activity>
 
         <service

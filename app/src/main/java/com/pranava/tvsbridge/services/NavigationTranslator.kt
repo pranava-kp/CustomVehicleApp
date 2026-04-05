@@ -2,6 +2,8 @@ package com.pranava.tvsbridge.services
 
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import android.content.Intent
+import android.content.IntentFilter
 
 object NavigationTranslator {
 
@@ -135,42 +137,84 @@ object NavigationTranslator {
     }
 
     /**
-     * Create the ZP Mobile Status packet (90, 80)
+     * Create the [J Heartbeat / Mobile Status packet (91, 74)
      */
-    fun createMobileStatusPacket(
-        batteryLevel: Int = 100,
-        signalStrength: Int = 4,
-        is24Hour: Boolean = true
+    fun createHeartbeatPacket(
+        context: android.content.Context
     ): ByteArray {
-        val packet = ByteArray(20)
-        packet[0] = 90 // 'Z'
-        packet[1] = 80 // 'P'
+        // Extract real phone battery level
+        val batteryStatus = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val batteryPct = batteryStatus?.let { intent ->
+            val level: Int = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+            val scale: Int = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+            (level * 100 / scale.toFloat()).toInt()
+        } ?: 100
         
-        // TVS App logic: Battery 0-100 mapped to cluster level
-        packet[2] = (batteryLevel / 10).toByte() 
-        packet[3] = signalStrength.toByte() // 0-4 bars
-        packet[4] = 0 // Call status
-        packet[5] = 0 // SMS status
+        // Extract real phone signal strength (Requires permission, fallback to 4 for now)
+        val signalStrength = 4 
+
+        val packet = ByteArray(20)
+        packet[0] = 91 // '['
+        packet[1] = 74 // 'J'
+        
+        // TVS dashboard expects battery scaled to a specific 0-5 level logic
+        // and packed into the same byte as the signal strength.
+        // Format: (SignalLevel << 4) | BatteryLevel
+        val batteryLevel = when {
+            batteryPct in 0..9 -> 0
+            batteryPct in 10..19 -> 1
+            batteryPct in 20..45 -> 2
+            batteryPct in 46..75 -> 3
+            batteryPct in 76..89 -> 4
+            else -> 5
+        }
+        
+        val signalLevel = 4 // Hardcode 4 bars of signal
+        packet[2] = ((signalLevel shl 4) or batteryLevel).toByte()
+        packet[3] = 80 // Hardcoded 'P' 0x50 signal mask from logs for now
+        packet[4] = 40 // Hardcoded '(' 0x28 mask from logs
+        packet[5] = 0
         
         val calendar = java.util.Calendar.getInstance()
-        packet[6] = calendar.get(java.util.Calendar.HOUR_OF_DAY).toByte()
+        var hour12 = calendar.get(java.util.Calendar.HOUR)
+        if (hour12 == 0) hour12 = 12
+        packet[6] = hour12.toByte()
         packet[7] = calendar.get(java.util.Calendar.MINUTE).toByte()
         packet[8] = calendar.get(java.util.Calendar.SECOND).toByte()
         
-        packet[9] = if (is24Hour) 1.toByte() else (if (calendar.get(java.util.Calendar.AM_PM) == 0) 16.toByte() else 17.toByte())
-        packet[10] = 0 // Missed Call count
-        packet[11] = 0 // ?
+        packet[9] = if (calendar.get(java.util.Calendar.AM_PM) == java.util.Calendar.PM) 1.toByte() else 0.toByte()
+        packet[10] = 0
+        
+        packet[11] = 4 // Signal strength (4 bars)
         
         packet[12] = calendar.get(java.util.Calendar.DAY_OF_MONTH).toByte()
         packet[13] = (calendar.get(java.util.Calendar.MONTH) + 1).toByte()
         packet[14] = (calendar.get(java.util.Calendar.YEAR) % 100).toByte()
         
-        packet[15] = 0 // Missed SMS count
-        packet[16] = 0 // Voice assist
-        packet[17] = 0 // Crash alert
-        packet[18] = 0 // Padding
+        packet[15] = 0 // Padding
+        
+        val is24Hour = android.text.format.DateFormat.is24HourFormat(context)
+        packet[16] = if (is24Hour) 1.toByte() else 0.toByte() 
+        
+        packet[17] = 0
+        packet[18] = 0
         packet[19] = (-1).toByte() // 0xFF
         
+        return packet
+    }
+
+    /**
+     * Create the ZP Mobile Status packet (90, 80)
+     */
+    fun createMobileStatusPacket(
+        context: android.content.Context
+    ): ByteArray {
+        val packet = ByteArray(20)
+        // Just return the blank Handshake ZP observed in your official logs (5a f1...)
+        val hexString = "5af1030900020000000503ea01010000000000ff"
+        for (i in 0 until 20) {
+            packet[i] = hexString.substring(i*2, i*2+2).toInt(16).toByte()
+        }
         return packet
     }
 
