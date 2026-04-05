@@ -125,7 +125,7 @@ object NavigationTranslator {
     /**
      * Create the [R Rider Name packet (91, 82)
      */
-    fun createRiderNamePacket(name: String = "Rider"): ByteArray {
+    fun createRiderNamePacket(name: String = "Provider"): ByteArray {
         val packet = ByteArray(20)
         packet[0] = 91 // '['
         packet[1] = 82 // 'R'
@@ -163,17 +163,17 @@ object NavigationTranslator {
         val batteryLevel = when {
             batteryPct in 0..9 -> 0
             batteryPct in 10..19 -> 1
-            batteryPct in 20..45 -> 2
-            batteryPct in 46..75 -> 3
-            batteryPct in 76..89 -> 4
-            else -> 5
+            batteryPct in 20..39 -> 2
+            batteryPct in 40..59 -> 3
+            batteryPct in 60..79 -> 4
+            else -> 5 // 80-100%
         }
         
-        val signalLevel = 4 // Hardcode 4 bars of signal
+        val signalLevel = 3 // Hardcode 3 bars of signal (TVS max signal is 3, not 4)
         packet[2] = ((signalLevel shl 4) or batteryLevel).toByte()
-        packet[3] = 80 // Hardcoded 'P' 0x50 signal mask from logs for now
-        packet[4] = 40 // Hardcoded '(' 0x28 mask from logs
-        packet[5] = 0
+        packet[3] = 120 // Default overspeed limit
+        packet[4] = 0 // Padding
+        packet[5] = 0 // SMS sent flag
         
         val calendar = java.util.Calendar.getInstance()
         var hour12 = calendar.get(java.util.Calendar.HOUR)
@@ -183,21 +183,18 @@ object NavigationTranslator {
         packet[8] = calendar.get(java.util.Calendar.SECOND).toByte()
         
         packet[9] = if (calendar.get(java.util.Calendar.AM_PM) == java.util.Calendar.PM) 1.toByte() else 0.toByte()
-        packet[10] = 0
-        
-        packet[11] = 4 // Signal strength (4 bars)
+        packet[10] = 0 // Missed calls
+        packet[11] = 0 // Constant padding (TVS expects 0 here)
         
         packet[12] = calendar.get(java.util.Calendar.DAY_OF_MONTH).toByte()
         packet[13] = (calendar.get(java.util.Calendar.MONTH) + 1).toByte()
         packet[14] = (calendar.get(java.util.Calendar.YEAR) % 100).toByte()
         
-        packet[15] = 0 // Padding
+        packet[15] = 0 // Missed SMS
+        packet[16] = 0 // Voice assist state
         
-        val is24Hour = android.text.format.DateFormat.is24HourFormat(context)
-        packet[16] = if (is24Hour) 1.toByte() else 0.toByte() 
-        
-        packet[17] = 0
-        packet[18] = 0
+        packet[17] = 0 // Crash alert
+        packet[18] = 0 // Padding
         packet[19] = (-1).toByte() // 0xFF
         
         return packet
